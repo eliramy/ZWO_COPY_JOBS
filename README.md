@@ -1,4 +1,2 @@
 # ZWO_COPY_JOBS
-Copy Jobs Between SAP ECC Systems
-
-Unofficial Program
+ABAP Unofficial Program - Copy Jobs Between SAP ECC Systems
