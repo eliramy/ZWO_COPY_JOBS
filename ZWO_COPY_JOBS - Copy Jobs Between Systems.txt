@@ -1,7 +1,5 @@
 *&---------------------------------------------------------------------*
 *& Report  ZWO_COPY_JOBS
-*&
-*& Author: Olaf Wolter, SAP SE, 25.11.2016
 *&---------------------------------------------------------------------*
 *& With this program, you can copy job definitions from one system
 *& to another.
