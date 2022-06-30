@@ -1,0 +1,834 @@
+*&---------------------------------------------------------------------*
+*& Report  ZWO_COPY_JOBS
+*&---------------------------------------------------------------------*
+*& With this program, you can copy job definitions from one system
+*& to another.
+*&---------------------------------------------------------------------*
+REPORT zwo_copy_jobs MESSAGE-ID bt.
+
+INCLUDE lbtchdef.
+
+TYPES: BEGIN OF t_job,
+  jobname TYPE btcjob,
+  old_jobcount TYPE btcjobcnt,
+  new_jobcount TYPE btcjobcnt,
+  old_client TYPE btcauthman,
+  new_client TYPE btcauthman,
+  sdluname TYPE btcsdlnm,
+  statusname TYPE statusname,
+  sdlstrtdt TYPE btcsdldate,
+  sdlstrttm TYPE btcsdltime,
+  errmessage TYPE swo_errmsg,
+  END OF t_job.
+
+DATA:
+  jobs       TYPE TABLE OF tbtcjob,
+  new_jobs    TYPE TABLE OF t_job,
+  is_btc_admin TYPE boolean VALUE abap_undefined.
+
+
+SELECTION-SCREEN BEGIN OF BLOCK general_info
+WITH FRAME TITLE text_999.
+
+SELECTION-SCREEN BEGIN OF BLOCK selpars WITH FRAME TITLE text_700.
+PARAMETERS:
+  names TYPE tbtco-jobname DEFAULT '*',
+  user  TYPE tbtco-sdluname DEFAULT sy-uname.
+
+SELECTION-SCREEN SKIP 1.
+
+SELECTION-SCREEN BEGIN OF BLOCK status WITH FRAME TITLE text_800.
+SELECTION-SCREEN BEGIN OF LINE.
+PARAMETERS prelim TYPE btcstatus AS CHECKBOX DEFAULT 'X'.
+SELECTION-SCREEN COMMENT 4(10) text_079 FOR FIELD prelim.
+SELECTION-SCREEN POSITION 15.
+PARAMETERS schedul TYPE btcstatus AS CHECKBOX DEFAULT 'X'.
+SELECTION-SCREEN COMMENT 16(10) text_080 FOR FIELD schedul.
+SELECTION-SCREEN POSITION 27.
+PARAMETERS finished TYPE btcstatus AS CHECKBOX.
+SELECTION-SCREEN COMMENT 28(10) text_082 FOR FIELD finished.
+SELECTION-SCREEN POSITION 39.
+PARAMETERS aborted TYPE btcstatus AS CHECKBOX.
+SELECTION-SCREEN COMMENT 40(10) text_081 FOR FIELD aborted.
+SELECTION-SCREEN END OF LINE.
+SELECTION-SCREEN END OF BLOCK status.
+
+SELECTION-SCREEN BEGIN OF BLOCK timepars WITH FRAME TITLE text_600.
+SELECTION-SCREEN BEGIN OF LINE.
+SELECTION-SCREEN COMMENT 4(12) text_004 FOR FIELD frodate.
+PARAMETER frodate TYPE btcsdate DEFAULT sy-datum.
+SELECTION-SCREEN COMMENT 35(12) text_006 FOR FIELD todate.
+PARAMETER todate TYPE btcsdate DEFAULT sy-datum.
+SELECTION-SCREEN END OF LINE.
+SELECTION-SCREEN BEGIN OF LINE.
+SELECTION-SCREEN COMMENT 4(12) text_005 FOR FIELD frotime.
+PARAMETER frotime TYPE btcstime DEFAULT sy-uzeit.
+SELECTION-SCREEN COMMENT 35(12) text_007 FOR FIELD totime.
+PARAMETER totime TYPE btcstime DEFAULT sy-uzeit.
+SELECTION-SCREEN END OF LINE.
+
+SELECTION-SCREEN SKIP 1.
+
+SELECTION-SCREEN BEGIN OF LINE.
+SELECTION-SCREEN COMMENT 1(20) text_009 FOR FIELD event.
+PARAMETER event TYPE btceventid.
+SELECTION-SCREEN END OF LINE.
+SELECTION-SCREEN SKIP 1.
+
+PARAMETER period TYPE boolean AS CHECKBOX.
+SELECTION-SCREEN END OF BLOCK timepars.
+
+SELECTION-SCREEN END OF BLOCK selpars.
+
+SELECTION-SCREEN BEGIN OF BLOCK target WITH FRAME TITLE text_200.
+PARAMETERS dest TYPE rfcdest MODIF ID 1a.
+SELECTION-SCREEN END OF BLOCK target.
+
+SELECTION-SCREEN BEGIN OF BLOCK add WITH FRAME TITLE text_500.
+PARAMETERS test AS CHECKBOX DEFAULT 'X' USER-COMMAND check MODIF ID 1b.
+PARAMETERS no_rel AS CHECKBOX MODIF ID 1a.
+SELECTION-SCREEN END OF BLOCK add.
+
+SELECTION-SCREEN END OF BLOCK general_info.
+
+
+CONSTANTS: euser TYPE xmilogeusr VALUE 'SAP_COPY'.
+
+*----------------------------------------------------------------------*
+*       CLASS lcl_rep DEFINITION
+*----------------------------------------------------------------------*
+*
+*----------------------------------------------------------------------*
+CLASS lcl_rep DEFINITION FINAL.
+
+  PUBLIC SECTION.
+
+    METHODS: translate_status IMPORTING iv_status TYPE btcstatus
+      RETURNING value(rv_statusname) TYPE statusname.
+
+ENDCLASS.                    "lcl_rep DEFINITION
+
+*----------------------------------------------------------------------*
+*       CLASS lcl_rep IMPLEMENTATION
+*----------------------------------------------------------------------*
+*
+*----------------------------------------------------------------------*
+CLASS lcl_rep IMPLEMENTATION.
+
+  METHOD translate_status.
+
+    CASE iv_status.
+      WHEN 'A'.
+        rv_statusname = 'aborted'(081).
+      WHEN 'F'.
+        rv_statusname = 'finished'(082).
+      WHEN 'S'.
+        rv_statusname = 'relased'(080).
+      WHEN 'R'.
+        rv_statusname = 'active'(077).
+      WHEN 'P'.
+        rv_statusname = 'scheduled'(079).
+      WHEN 'Y'.
+        rv_statusname = 'ready'(078).
+      WHEN 'Z'.
+        rv_statusname = 'suspended'(748).
+      WHEN OTHERS.
+        rv_statusname = 'unkown'(749).
+    ENDCASE.
+
+  ENDMETHOD.                    "translate_status
+
+ENDCLASS.                    "lcl_rep IMPLEMENTATION
+
+
+INITIALIZATION.
+
+  text_500 = 'Additional parameters'(500).
+  text_600 = 'Start conditions'(600).
+  text_700 = 'Selection parameters'(700).
+  text_800 = 'Job status'(800).
+  text_200 = 'Target system'(200).
+
+  text_079 = 'scheduled'(079).
+  text_080 = 'relased'(080).
+  text_081 = 'aborted'(081).
+  text_082 = 'finished'(082).
+
+  %_dest_%_app_%-text = 'RFC destination'(001).
+  %_names_%_app_%-text = 'Job names (pattern)'(002).
+  %_user_%_app_%-text = 'Job initiator (pattern)'(003).
+  %_period_%_app_%-text = 'Only periodic jobs'(008).
+
+  text_004 = 'From (date)'(004).
+  text_005 = 'From (time)'(005).
+  text_006 = 'To (date)'(006).
+  text_007 = 'To (time)'(007).
+  text_009 = 'Or after event'(009).
+
+  %_test_%_app_%-text = 'Show only'(400).
+  %_no_rel_%_app_%-text = 'Do not release'(300).
+
+  IF is_btc_admin = abap_undefined.
+    AUTHORITY-CHECK OBJECT 'S_BTCH_ADM'
+             ID 'BTCADMIN' FIELD btc_yes.
+    IF sy-subrc <> 0.
+      is_btc_admin = abap_false.
+      MESSAGE s212(wz).
+    ELSE.
+      is_btc_admin = abap_true.
+    ENDIF.
+  ENDIF.
+
+
+AT SELECTION-SCREEN OUTPUT.
+
+  LOOP AT SCREEN.
+    IF screen-name = 'TEST' AND is_btc_admin = abap_false.
+      screen-input = '0'.
+      MODIFY SCREEN.
+    ENDIF.
+    IF screen-group1 = '1A'.
+      IF test = 'X'.
+        screen-input = '0'.
+        MODIFY SCREEN.
+      ELSE.
+        screen-input = '1'.
+        MODIFY SCREEN.
+      ENDIF.
+    ENDIF.
+  ENDLOOP.
+
+
+AT SELECTION-SCREEN ON dest.
+
+  IF test IS INITIAL AND dest IS INITIAL.
+    MESSAGE e055(00).
+  ENDIF.
+
+
+START-OF-SELECTION.
+
+  PERFORM select_jobs.
+  IF lines( jobs ) > 0.
+    IF test IS INITIAL.
+      PERFORM connect.
+    ENDIF.
+    PERFORM copy_jobs.
+    PERFORM disconnect.
+    PERFORM show_jobs.
+  ENDIF.
+
+
+*&--------------------------------------------------------------------*
+*&      Form  select_jobs
+*&--------------------------------------------------------------------*
+*       text
+*---------------------------------------------------------------------*
+FORM select_jobs.
+
+  DATA selection TYPE btcselect.
+
+  selection-jobname = names.
+  selection-username = user.
+  selection-from_date = frodate.
+  selection-from_time = frotime.
+  selection-to_date = todate.
+  selection-to_time = totime.
+  selection-prelim = prelim.
+  selection-schedul = schedul.
+*  selection-ready = ready.
+*  selection-running = running.
+  selection-finished = finished.
+  selection-aborted = aborted.
+  selection-eventid = event.
+
+  CALL FUNCTION 'BP_JOB_SELECT'
+    EXPORTING
+      jobselect_dialog          = btc_no
+     jobsel_param_in           = selection
+*   ENDDATE                   = '        '
+*   ENDTIME                   = '      '
+*   SELECTION                 = 'AL'
+*   ADK_MODE                  = ' '
+* IMPORTING
+*   JOBSEL_PARAM_OUT          =
+*   LOCAL_CLIENT              =
+*   NR_OF_JOBS_FOUND          =
+    TABLES
+      jobselect_joblist         = jobs
+*   JOBNAME_EXT_SEL           =
+*   USERNAME_EXT_SEL          =
+* CHANGING
+*   ERROR_CODE                =
+   EXCEPTIONS
+     invalid_dialog_type       = 1
+     jobname_missing           = 2
+     no_jobs_found             = 3
+     selection_canceled        = 4
+     username_missing          = 5
+     OTHERS                    = 6
+            .
+  IF sy-subrc <> 0.
+    MESSAGE s145.
+  ENDIF.
+
+ENDFORM.                    "select_jobs
+
+
+
+*&--------------------------------------------------------------------*
+*&      Form  connect
+*&--------------------------------------------------------------------*
+*       text
+*---------------------------------------------------------------------*
+*      -->P_DEST     text
+*      -->P_RC       text
+*---------------------------------------------------------------------*
+FORM connect.
+
+  DATA rfc_msg  TYPE btcxpgprox-rfcmsg.
+  DATA ret TYPE bapiret2.
+  DATA txt TYPE sxmimsgext.
+
+  CALL FUNCTION 'BAPI_XMI_LOGON' DESTINATION dest
+    EXPORTING
+      extcompany            = 'SAP_EMERGENCY'
+      extproduct            = 'JOB_COPY'
+      interface             = 'XBP'
+      version               = '2.0'
+    IMPORTING
+      return                = ret
+    EXCEPTIONS
+      communication_failure = 1  MESSAGE rfc_msg
+      system_failure        = 2  MESSAGE rfc_msg.
+
+  IF sy-subrc <> 0.
+    MESSAGE e645 WITH rfc_msg.
+  ENDIF.
+
+  IF ret-type = 'E'.
+    PERFORM print_message USING ret-number
+      ret-message_v1 ret-message_v2 ret-message_v3 ret-message_v4
+      CHANGING txt.
+    MESSAGE e645 WITH txt.
+  ENDIF.
+
+ENDFORM.                    "connect
+
+*&--------------------------------------------------------------------*
+*&      Form  copy_jobs
+*&--------------------------------------------------------------------*
+*       text
+*---------------------------------------------------------------------*
+FORM copy_jobs.
+
+  DATA rfc_msg  TYPE btcxpgprox-rfcmsg.
+  DATA ret TYPE bapiret2.
+  DATA new_header TYPE bp20head.
+  DATA mask TYPE bp20hmsk.
+  DATA txt TYPE sxmimsgext.
+  DATA all_params TYPE pri_params.
+  DATA allpripar  TYPE bapipripar.
+  DATA allarcpar  TYPE bapiarcpar.
+  DATA priparkey TYPE tbtcp-priparkey.
+  DATA found(1).
+  DATA recipient TYPE swotobjid.
+  DATA new_step TYPE bpjobstep.
+  DATA lt_steps TYPE TABLE OF tbtcstep.
+  DATA ls_step TYPE tbtcstep.
+  DATA so_message       TYPE string.
+  DATA ls_recipient TYPE bapixmrecip.
+  DATA stepno TYPE btcstepcnt.
+  DATA l_subrc TYPE sy-subrc.
+  DATA l_obj TYPE REF TO lcl_rep.
+  DATA  new_job TYPE t_job.
+  DATA ls_job TYPE tbtcjob.
+  DATA ls_jobhead TYPE bp20job.
+
+  CREATE OBJECT l_obj.
+
+  CLEAR new_jobs.
+
+  LOOP AT jobs INTO ls_job.
+
+    CLEAR new_job.
+
+    IF period IS NOT INITIAL.
+      CHECK ls_job-periodic = abap_true.
+    ENDIF.
+
+    MOVE-CORRESPONDING ls_job TO new_job.
+    new_job-old_jobcount = ls_job-jobcount.
+    new_job-old_client = ls_job-authckman.
+    new_job-statusname = l_obj->translate_status( ls_job-status ).
+
+    IF test IS INITIAL.
+
+      CLEAR: stepno, lt_steps, new_header.
+
+      CALL FUNCTION 'BP_JOB_READ'
+        EXPORTING
+          job_read_jobcount           = ls_job-jobcount
+          job_read_jobname            = ls_job-jobname
+          job_read_opcode             = btc_read_all_jobdata
+*       IMPORTING
+*         JOB_READ_JOBHEAD            =
+*         JOBLOG_ATTRIBUTES           =
+*         EPP_ATTRIBUTES              =
+       TABLES
+         job_read_steplist           = lt_steps
+*         SPOOL_ATTRIBUTES            =
+*       CHANGING
+*         RET                         =
+       EXCEPTIONS
+         invalid_opcode              = 1
+         job_doesnt_exist            = 2
+         job_doesnt_have_steps       = 3
+         OTHERS                      = 4
+                .
+      l_subrc = sy-subrc.
+      new_job-old_jobcount = ls_job-jobcount.
+      IF l_subrc = 0.
+        READ TABLE lt_steps WITH KEY program = 'RSBTCPT3' INTO ls_step.
+      ENDIF.
+
+      IF sy-subrc = 0 OR l_subrc <> 0.
+        MESSAGE s511 INTO new_job-errmessage.
+      ELSE.
+
+        CALL FUNCTION 'BAPI_XBP_JOB_OPEN'
+          DESTINATION dest
+          EXPORTING
+            jobname               = ls_job-jobname
+            external_user_name    = euser
+            jobclass              = ls_job-jobclass
+          IMPORTING
+            jobcount              = new_job-new_jobcount
+            return                = ret
+          EXCEPTIONS
+            communication_failure = 1  MESSAGE rfc_msg
+            system_failure        = 2  MESSAGE rfc_msg.
+        IF sy-subrc <> 0.
+          new_job-errmessage = rfc_msg.
+        ENDIF.
+        IF ret-type = 'E'.
+          PERFORM print_message USING ret-number
+            ret-message_v1 ret-message_v2 ret-message_v3 ret-message_v4
+            CHANGING txt.
+          new_job-errmessage = txt.
+        ENDIF.
+
+        IF new_job-errmessage IS INITIAL.
+
+          LOOP AT lt_steps INTO ls_step.
+
+            ADD 1 TO stepno.
+            CLEAR priparkey.
+
+            IF ls_step-xpgpid IS INITIAL.
+              SELECT SINGLE priparkey FROM tbtcp INTO priparkey
+                                  WHERE jobname EQ ls_job-jobname AND
+                                        jobcount EQ ls_job-jobcount AND
+                                        stepcount EQ stepno.
+              CALL FUNCTION 'LOAD_PRINT_PARAMETERS'
+                EXPORTING
+                  key            = priparkey
+                IMPORTING
+                  out_parameters = all_params
+                  key_found      = found
+                EXCEPTIONS
+                  error_occured  = 1
+                  OTHERS         = 2.
+              IF sy-subrc <> 0 OR found IS INITIAL.
+                MOVE-CORRESPONDING ls_step TO allpripar.
+                MOVE-CORRESPONDING ls_step TO allarcpar.
+              ELSE.
+                MOVE-CORRESPONDING all_params TO allpripar.
+                MOVE-CORRESPONDING all_params TO allarcpar.
+              ENDIF.
+
+              MOVE-CORRESPONDING ls_step TO new_step.
+              CALL FUNCTION 'BAPI_XBP_ADD_JOB_STEP'
+                DESTINATION dest
+                EXPORTING
+                  jobname               = new_job-jobname
+                  jobcount              = new_job-new_jobcount
+                  external_user_name    = euser
+                  step                  = new_step
+*                 step_num              = stepno
+                  allpripar             = allpripar
+                  allarcpar             = allarcpar
+                IMPORTING
+                  return                = ret
+                EXCEPTIONS
+                  communication_failure = 1  MESSAGE rfc_msg
+                  system_failure        = 2  MESSAGE rfc_msg
+                  ##fm_subrc_ok.
+            ELSE.
+* external commandos
+              MOVE-CORRESPONDING ls_step TO new_step.
+              CALL FUNCTION 'BAPI_XBP_ADD_JOB_STEP'
+                DESTINATION dest
+                EXPORTING
+                  jobname               = new_job-jobname
+                  jobcount              = new_job-new_jobcount
+                  external_user_name    = euser
+                  step                  = new_step
+                IMPORTING
+                  return                = ret
+                EXCEPTIONS
+                  communication_failure = 1  MESSAGE rfc_msg
+                  system_failure        = 2  MESSAGE rfc_msg
+                  ##fm_subrc_ok.
+            ENDIF.
+          ENDLOOP.
+
+          IF sy-subrc <> 0.
+            new_job-errmessage = rfc_msg.
+          ELSE.
+            IF ret-type = 'E'.
+              PERFORM print_message USING ret-number
+                ret-message_v1 ret-message_v2 ret-message_v3 ret-message_v4
+                CHANGING txt.
+              new_job-errmessage = txt.
+            ENDIF.
+          ENDIF.
+
+          IF new_job-errmessage IS NOT INITIAL.
+            PERFORM delete_job USING new_job-jobname new_job-new_jobcount.
+            CLEAR new_job-new_jobcount.
+          ELSE.
+
+            IF ls_job-recobjkey IS NOT INITIAL.   "get recipient data
+              recipient-logsys = ls_job-reclogsys.
+              recipient-objtype = ls_job-recobjtype.
+              recipient-objkey = ls_job-recobjkey.
+              recipient-describe = ls_job-recdescrib.
+
+              PERFORM convert_recobject_to_recipient IN PROGRAM saplsxbp USING recipient
+                                                     CHANGING ls_recipient
+                                                              so_message.
+              IF so_message IS NOT INITIAL.
+                new_job-errmessage = so_message.
+              ENDIF.
+            ENDIF.
+
+            IF new_job-errmessage IS NOT INITIAL.
+              PERFORM delete_job USING new_job-jobname new_job-new_jobcount.
+              CLEAR new_job-new_jobcount.
+            ELSE.
+
+              CALL FUNCTION 'BAPI_XBP_JOB_CLOSE'
+                DESTINATION dest
+                EXPORTING
+                  jobname               = new_job-jobname
+                  jobcount              = new_job-new_jobcount
+                  external_user_name    = euser
+*                 target_server         = new_job-execserver
+                  recipient             = ls_recipient
+                IMPORTING
+                  return                = ret
+                EXCEPTIONS
+                  communication_failure = 1  MESSAGE rfc_msg
+                  system_failure        = 2  MESSAGE rfc_msg.
+              IF sy-subrc <> 0.
+                new_job-errmessage = rfc_msg.
+              ELSE.
+                IF ret-type = 'E'.
+                  PERFORM print_message USING ret-number
+                    ret-message_v1 ret-message_v2 ret-message_v3 ret-message_v4
+                    CHANGING txt.
+                  new_job-errmessage = txt.
+                ENDIF.
+              ENDIF.
+
+              IF new_job-errmessage IS NOT INITIAL.
+                PERFORM delete_job USING new_job-jobname new_job-new_jobcount.
+                CLEAR new_job-new_jobcount.
+              ELSE.
+
+                CALL FUNCTION 'BAPI_XBP_JOB_READ' DESTINATION dest
+                  EXPORTING
+                    jobname               = new_job-jobname
+                    jobcount              = new_job-new_jobcount
+                    external_user_name    = euser
+                    job_header_only       = abap_true
+                    no_recipient          = abap_true
+                  IMPORTING
+                    jobhead               = ls_jobhead
+                    return                = ret
+                  EXCEPTIONS
+                    communication_failure = 1  MESSAGE rfc_msg
+                    system_failure        = 2  MESSAGE rfc_msg.
+                IF sy-subrc <> 0.
+                  new_job-errmessage = rfc_msg.
+                ELSE.
+                  IF ret-type = 'E'.
+                    PERFORM print_message USING ret-number
+                      ret-message_v1 ret-message_v2 ret-message_v3 ret-message_v4
+                      CHANGING txt.
+                    new_job-errmessage = txt.
+                  ENDIF.
+                ENDIF.
+
+                IF new_job-errmessage IS INITIAL.
+
+                  new_job-new_client = ls_jobhead-authckman.
+
+                  IF ls_job-status = btc_released.
+                    CLEAR new_header.
+                    MOVE-CORRESPONDING new_job TO new_header.
+                    mask-startcond = 'X'.
+                    CLEAR mask-thost.
+                    CLEAR mask-tserver.
+                    CLEAR mask-tsrvgrp.
+                    CLEAR mask-reciplnt.
+
+                    DATA:
+                      old_stdt_data TYPE tbtcjob,
+                      stdt_data     TYPE tbtcstrt.
+
+                    MOVE-CORRESPONDING ls_job TO old_stdt_data.
+                    PERFORM extract_stdt_from_jobhead IN PROGRAM saplbtch
+                      USING old_stdt_data stdt_data.
+                    IF stdt_data-startdttyp IS INITIAL.
+                      MOVE-CORRESPONDING ls_job TO new_header.
+                    ELSE.
+                      MOVE-CORRESPONDING stdt_data TO new_header.
+                    ENDIF.
+
+                    CALL FUNCTION 'BAPI_XBP_JOB_HEADER_MODIFY'
+                      DESTINATION dest
+                      EXPORTING
+                        jobname               = new_job-jobname
+                        jobcount              = new_job-new_jobcount
+                        job_header            = new_header
+                        external_user_name    = euser
+                        dont_release          = no_rel
+                        mask                  = mask
+                      IMPORTING
+                        return                = ret
+                      EXCEPTIONS
+                        communication_failure = 1  MESSAGE rfc_msg
+                        system_failure        = 2  MESSAGE rfc_msg.
+                    IF sy-subrc <> 0.
+                      new_job-errmessage = rfc_msg.
+                    ELSE.
+                      IF ret-type = 'E'.
+                        PERFORM print_message USING ret-number
+                          ret-message_v1 ret-message_v2 ret-message_v3 ret-message_v4
+                          CHANGING txt.
+                        new_job-errmessage = txt.
+                      ENDIF.
+
+                    ENDIF.
+
+                  ENDIF.           " BAPI_XBP_JOB_HEADER_MODIFY
+
+                ENDIF.           " BAPI_XBP_JOB_READ
+
+              ENDIF.               " BAPI_XBP_JOB_CLOSE
+
+            ENDIF.                 " convert_recobject_to_recipient
+
+          ENDIF.                   " BAPI_XBP_ADD_JOB_STEP
+
+        ENDIF.                     " BAPI_XBP_JOB_OPEN
+
+      ENDIF.                       " BP_JOB_READ
+
+    ENDIF.                       " test mode
+
+    APPEND new_job TO new_jobs.
+
+  ENDLOOP.
+
+
+
+ENDFORM.                    "copy_jobs
+
+
+*&--------------------------------------------------------------------*
+*&      Form  print_message
+*&--------------------------------------------------------------------*
+*       text
+*---------------------------------------------------------------------*
+*      -->MSGID      text
+*      -->ARG1       text
+*      -->ARG2       text
+*      -->ARG3       text
+*      -->ARG4       text
+*      -->MESSAGE    text
+*---------------------------------------------------------------------*
+FORM print_message
+  USING
+    msgid    TYPE bapiret2-number
+    arg1     TYPE bapiret2-message_v1
+    arg2     TYPE bapiret2-message_v1
+    arg3     TYPE bapiret2-message_v1
+    arg4     TYPE bapiret2-message_v1
+  CHANGING
+    message TYPE sxmimsgext.
+
+  DATA:
+    p_message TYPE sxmimsgraw.
+
+  p_message-msgclass = 'SAP-T100'.
+  CONCATENATE 'XM' msgid INTO p_message-msgid SEPARATED BY space.
+  p_message-msgarg1 = arg1.
+  p_message-argtype1 = 'C'.
+  p_message-msgarg2 = arg2.
+  p_message-argtype2 = 'C'.
+  p_message-msgarg3 = arg3.
+  p_message-argtype3 = 'C'.
+  p_message-msgarg4 = arg4.
+  p_message-argtype4 = 'C'.
+
+  CALL FUNCTION 'SXMI_MESSAGE_TRANSLATE_INT'
+    EXPORTING
+      msgraw       = p_message
+    IMPORTING
+      msgtran      = message
+    EXCEPTIONS
+      OTHERS       = 99
+      ##fm_subrc_ok.
+
+ENDFORM.                    "print_message
+*&---------------------------------------------------------------------*
+*&      Form  SHOW_JOBS
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*  -->  p1        text
+*  <--  p2        text
+*----------------------------------------------------------------------*
+FORM show_jobs .
+
+  DATA: gr_table      TYPE REF TO cl_salv_table,
+*        lr_selections TYPE REF TO cl_salv_selections,
+        lr_columns    TYPE REF TO cl_salv_columns_table,
+        lr_column     TYPE REF TO cl_salv_column_table.
+  DATA l_ltxt TYPE scrtext_l.
+  DATA l_mtxt TYPE scrtext_m.
+  DATA l_stxt TYPE scrtext_s.
+
+
+  TRY.
+      cl_salv_table=>factory(
+        IMPORTING
+          r_salv_table = gr_table
+        CHANGING
+          t_table      = new_jobs ).
+    CATCH cx_salv_msg.                                  "#EC NO_HANDLER
+  ENDTRY.
+
+  lr_columns = gr_table->get_columns( ).
+  lr_columns->set_optimize( abap_true ).
+
+  TRY.
+      lr_column ?= lr_columns->get_column( 'OLD_JOBCOUNT' ).
+      lr_column->set_short_text( l_stxt ).
+      l_mtxt = 'original jobcount'(001)                         ##text_diff.
+      lr_column->set_medium_text( l_mtxt ).
+      l_ltxt = l_mtxt.
+      lr_column->set_long_text( l_ltxt ).
+    CATCH cx_salv_not_found.                            "#EC NO_HANDLER
+  ENDTRY.
+
+  TRY.
+      lr_column ?= lr_columns->get_column( 'NEW_JOBCOUNT' ).
+      lr_column->set_short_text( l_stxt ).
+      l_mtxt = 'new jobcount'(002)                         ##text_diff.
+      lr_column->set_medium_text( l_mtxt ).
+      l_ltxt = l_mtxt.
+      lr_column->set_long_text( l_ltxt ).
+    CATCH cx_salv_not_found.                            "#EC NO_HANDLER
+  ENDTRY.
+
+  TRY.
+      lr_column ?= lr_columns->get_column( 'OLD_CLIENT' ).
+      lr_column->set_short_text( l_stxt ).
+      l_mtxt = 'original client'(017)                         ##text_diff.
+      lr_column->set_medium_text( l_mtxt ).
+      l_ltxt = l_mtxt.
+      lr_column->set_long_text( l_ltxt ).
+    CATCH cx_salv_not_found.                            "#EC NO_HANDLER
+  ENDTRY.
+
+  TRY.
+      lr_column ?= lr_columns->get_column( 'NEW_CLIENT' ).
+      lr_column->set_short_text( l_stxt ).
+      l_mtxt = 'new client'(018)                         ##text_diff.
+      lr_column->set_medium_text( l_mtxt ).
+      l_ltxt = l_mtxt.
+      lr_column->set_long_text( l_ltxt ).
+    CATCH cx_salv_not_found.                            "#EC NO_HANDLER
+  ENDTRY.
+
+  TRY.
+      lr_column ?= lr_columns->get_column( 'SDLSTRTDT' ).
+      lr_column->set_short_text( l_stxt ).
+      l_mtxt = 'Start date'(015)                         ##text_diff.
+      lr_column->set_medium_text( l_mtxt ).
+      l_ltxt = l_mtxt.
+      lr_column->set_long_text( l_ltxt ).
+    CATCH cx_salv_not_found.                            "#EC NO_HANDLER
+  ENDTRY.
+
+  TRY.
+      lr_column ?= lr_columns->get_column( 'SDLSTRTTM' ).
+      lr_column->set_short_text( l_stxt ).
+      l_mtxt = 'Start time'(016)                         ##text_diff.
+      lr_column->set_medium_text( l_mtxt ).
+      l_ltxt = l_mtxt.
+      lr_column->set_long_text( l_ltxt ).
+    CATCH cx_salv_not_found.                            "#EC NO_HANDLER
+  ENDTRY.
+
+  gr_table->display( ).
+
+ENDFORM.                    " SHOW_JOBS
+*&---------------------------------------------------------------------*
+*&      Form  DELETE_JOB
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*      -->P_NEW_JOB_JOBNAME  text
+*      -->P_NEW_JOB_NEW_JOBCOUNT  text
+*----------------------------------------------------------------------*
+FORM delete_job  USING    p_jobname TYPE btcjob
+                          p_jobcount TYPE btcjobcnt.
+
+  CALL FUNCTION 'BAPI_XBP_JOB_DELETE' DESTINATION dest
+    EXPORTING
+      external_user_name       = euser
+      jobname                  = p_jobname
+      jobcount                 = p_jobcount
+* IMPORTING
+*   RETURN                   =
+    EXCEPTIONS
+      communication_failure = 1
+      system_failure        = 2         ##fm_subrc_ok.
+
+ENDFORM.                    " DELETE_JOB
+*&---------------------------------------------------------------------*
+*&      Form  DISCONNECT
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*  -->  p1        text
+*  <--  p2        text
+*----------------------------------------------------------------------*
+FORM disconnect .
+
+  CALL FUNCTION 'BAPI_XMI_LOGOFF' DESTINATION dest
+   EXPORTING
+     interface       = 'XBP'
+*   IMPORTING
+*     RETURN          =
+   EXCEPTIONS
+     communication_failure = 1
+     system_failure        = 2    ##fm_subrc_ok.
+
+
+ENDFORM.                    " DISCONNECT
